@@ -123,6 +123,25 @@ def upsert_note_to_qdrant(note_text):
     st.rerun()
 
 
+def retrieve_notes_from_qdrant(query=None):
+    qdrant_client = get_qdrant_client()
+    if not query:
+        notes = qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            limit=5,
+        )[0]
+
+        return [{"text": note.payload["text"], "score": None} for note in notes]
+
+    notes = qdrant_client.search(
+        collection_name=QDRANT_COLLECTION_NAME,
+        query_vector=get_embedding(text=query),
+        limit=5,
+    )
+
+    return [{"text": note.payload["text"], "score": note.score} for note in notes]
+
+
 #
 # MAIN
 #
@@ -134,7 +153,6 @@ st.set_page_config(
 )
 st.title(":memo: Notes AI")
 st.markdown("*Capture your thoughts with voice or text*")
-st.divider()
 
 ensure_qdrant_collection_exists()
 
@@ -154,74 +172,86 @@ if not st.session_state.get("openai_api_key"):
 if not st.session_state.get("openai_api_key"):
     st.stop()
 
+col1, col2 = st.tabs(["New note", "Search notes"])
 
-input_mode = st.radio(
-    "Select your note input method:",
-    [":microphone: Audio Recording", ":pencil: Manual Typing"],
-    horizontal=True,
-)
-
-if input_mode == ":microphone: Audio Recording":
-    note_audio = audiorecorder(
-        start_prompt="▶️ Start recording",
-        stop_prompt="⏹️ Stop Recording",
-        key=f"audio_recorder_{st.session_state.get('audio_key', 0)}",
+with col1:
+    input_mode = st.radio(
+        "Select your note input method:",
+        [":microphone: Audio Recording", ":pencil: Manual Typing"],
+        horizontal=True,
     )
 
-    if note_audio:
-        audio = BytesIO()
-        note_audio.export(
-            audio,
-            format="mp3",
-        )
-        st.session_state["note_audio_bytes"] = audio.getvalue()
-
-        current_md5 = md5(st.session_state["note_audio_bytes"]).hexdigest()
-
-        if st.session_state["note_audio_bytes_md5"] != current_md5:
-            st.session_state["note_audio_text"] = ""
-            st.session_state["note_audio_bytes_md5"] = current_md5
-
-        st.audio(
-            st.session_state["note_audio_bytes"],
-            format="audio/mp3",
+    if input_mode == ":microphone: Audio Recording":
+        note_audio = audiorecorder(
+            start_prompt="▶️ Start recording",
+            stop_prompt="⏹️ Stop Recording",
+            key=f"audio_recorder_{st.session_state.get('audio_key', 0)}",
         )
 
-        if st.button(
-            "Transcribe audio",
-            use_container_width=True,
-        ):
-            st.session_state["note_audio_text"] = transcribe_audio(
+        if note_audio:
+            audio = BytesIO()
+            note_audio.export(
+                audio,
+                format="mp3",
+            )
+            st.session_state["note_audio_bytes"] = audio.getvalue()
+
+            current_md5 = md5(st.session_state["note_audio_bytes"]).hexdigest()
+
+            if st.session_state["note_audio_bytes_md5"] != current_md5:
+                st.session_state["note_audio_text"] = ""
+                st.session_state["note_audio_bytes_md5"] = current_md5
+
+            st.audio(
                 st.session_state["note_audio_bytes"],
+                format="audio/mp3",
             )
 
-        if st.session_state["note_audio_text"]:
-            st.session_state["note_audio_text"] = st.text_area(
-                "Audio transcription (you can edit):",
-                value=st.session_state["note_audio_text"],
-            )
+            if st.button(
+                "Transcribe audio",
+                use_container_width=True,
+            ):
+                st.session_state["note_audio_text"] = transcribe_audio(
+                    st.session_state["note_audio_bytes"],
+                )
 
-        if st.session_state["note_audio_text"] and st.button(
+            if st.session_state["note_audio_text"]:
+                st.session_state["note_audio_text"] = st.text_area(
+                    "Audio transcription (you can edit):",
+                    value=st.session_state["note_audio_text"],
+                )
+
+            if st.session_state["note_audio_text"] and st.button(
+                "Save note",
+                disabled=not st.session_state["note_audio_text"].strip(),
+                use_container_width=True,
+            ):
+                upsert_note_to_qdrant(note_text=st.session_state["note_audio_text"])
+                st.toast("Note saved!", icon="🎉")
+
+    else:
+        st.session_state["note_text"] = st.text_area(
+            "Type your note:",
+            value=st.session_state["note_text"],
+            height=200,
+            placeholder="Start typing your note here...",
+        )
+
+        if st.session_state["note_text"] and st.button(
             "Save note",
-            disabled=not st.session_state["note_audio_text"].strip(),
+            disabled=not st.session_state["note_text"].strip(),
             use_container_width=True,
+            key=f"text_note_{st.session_state.get('text_key', 0)}",
         ):
-            upsert_note_to_qdrant(note_text=st.session_state["note_audio_text"])
+            upsert_note_to_qdrant(note_text=st.session_state["note_text"])
             st.toast("Note saved!", icon="🎉")
 
-else:
-    st.session_state["note_text"] = st.text_area(
-        "Type your note:",
-        value=st.session_state["note_text"],
-        height=200,
-        placeholder="Start typing your note here...",
-    )
+with col2:
+    query = st.text_input("Search Notes")
 
-    if st.session_state["note_text"] and st.button(
-        "Save note",
-        disabled=not st.session_state["note_text"].strip(),
-        use_container_width=True,
-        key=f"text_note_{st.session_state.get('text_key', 0)}",
-    ):
-        upsert_note_to_qdrant(note_text=st.session_state["note_text"])
-        st.toast("Note saved!", icon="🎉")
+    if st.button("Search", use_container_width=True):
+        for note in retrieve_notes_from_qdrant(query):
+            with st.container(border=True):
+                st.markdown(note["text"])
+                if note["score"] is not None:
+                    st.markdown(f':violet[{note["score"]}]')
