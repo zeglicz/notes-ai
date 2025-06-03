@@ -1,4 +1,5 @@
 from io import BytesIO
+from hashlib import md5
 import streamlit as st
 from audiorecorder import audiorecorder
 
@@ -8,6 +9,9 @@ from dotenv import dotenv_values
 #
 # INIT
 #
+
+if "note_audio_bytes_md5" not in st.session_state:
+    st.session_state["note_audio_bytes_md5"] = None
 
 if "note_audio_bytes" not in st.session_state:
     st.session_state["note_audio_bytes"] = None
@@ -29,7 +33,7 @@ env = dotenv_values(".env")
 
 @st.cache_resource
 def get_openai_client():
-    return OpenAI(api_key=env["OPENAI_API_KEY"])
+    return OpenAI(api_key=st.session_state["openai_api_key"])
 
 
 def transcribe_audio(audio_bytes):
@@ -58,6 +62,23 @@ st.title(":memo: Notes AI")
 st.markdown("*Capture your thoughts with voice or text*")
 st.divider()
 
+# OpenAI API key protection
+if not st.session_state.get("openai_api_key"):
+    if "OPENAI_API_KEY" in env:
+        st.session_state["openai_api_key"] = env["OPENAI_API_KEY"]
+    else:
+        st.info("Add your OpenAI API key to use the application")
+        st.session_state["openai_api_key"] = st.text_input(
+            "API key",
+            type="password",
+        )
+        if st.session_state["openai_api_key"]:
+            st.rerun()
+
+if not st.session_state.get("openai_api_key"):
+    st.stop()
+
+
 input_mode = st.radio(
     "Select your note input method:",
     [":microphone: Audio Recording", ":pencil: Manual Typing"],
@@ -77,6 +98,13 @@ if input_mode == ":microphone: Audio Recording":
             format="mp3",
         )
         st.session_state["note_audio_bytes"] = audio.getvalue()
+
+        current_md5 = md5(st.session_state["note_audio_bytes"]).hexdigest()
+
+        if st.session_state["note_audio_bytes_md5"] != current_md5:
+            st.session_state["note_audio_text"] = ""
+            st.session_state["note_audio_bytes_md5"] = current_md5
+
         st.audio(
             st.session_state["note_audio_bytes"],
             format="audio/mp3",
