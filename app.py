@@ -1,10 +1,14 @@
 from io import BytesIO
+from uuid import uuid4
 from hashlib import md5
 import streamlit as st
 from audiorecorder import audiorecorder
 
 from openai import OpenAI
 from dotenv import dotenv_values
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import PointStruct, Distance, VectorParams
 
 #
 # INIT
@@ -22,18 +26,33 @@ if "note_audio_text" not in st.session_state:
 if "note_text" not in st.session_state:
     st.session_state["note_text"] = ""
 
+if "audio_key" not in st.session_state:
+    st.session_state["audio_key"] = 0
+
+if "text_key" not in st.session_state:
+    st.session_state["text_key"] = 0
+
+#
+# ENVS, CLIENTS
+#
+
+env = dotenv_values(".env")
+
+
+def get_openai_client():
+    return OpenAI(api_key=st.session_state["openai_api_key"])
+
+
+@st.cache_resource()
+def get_qdrant_client():
+    return QdrantClient(path=":memory:")
+
+
 #
 # AUDIO TRANSCRIBE
 #
 
 AUDIO_TRANSCRIBE_MODEL = "whisper-1"
-
-env = dotenv_values(".env")
-
-
-@st.cache_resource
-def get_openai_client():
-    return OpenAI(api_key=st.session_state["openai_api_key"])
 
 
 def transcribe_audio(audio_bytes):
@@ -50,6 +69,61 @@ def transcribe_audio(audio_bytes):
 
 
 #
+# QDRANT, GET EMBEDDING
+#
+
+EMBEDDING_MODEL = "text-embedding-3-large"
+EMBEDDING_DIM = 3072
+QDRANT_COLLECTION_NAME = "notes-ai"
+
+
+def ensure_qdrant_collection_exists():
+    qdrant_client = get_qdrant_client()
+
+    if not qdrant_client.collection_exists(QDRANT_COLLECTION_NAME):
+        qdrant_client.create_collection(
+            collection_name=QDRANT_COLLECTION_NAME,
+            vectors_config=VectorParams(
+                size=EMBEDDING_DIM,
+                distance=Distance.COSINE,
+            ),
+        )
+
+
+def get_embedding(text):
+    openai_client = get_openai_client()
+    result = openai_client.embeddings.create(
+        input=[text],
+        model=EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIM,
+    )
+
+    return result.data[0].embedding
+
+
+def upsert_note_to_qdrant(note_text):
+    qdrant_client = get_qdrant_client()
+    qdrant_client.upsert(
+        collection_name=QDRANT_COLLECTION_NAME,
+        points=[
+            PointStruct(
+                id=str(uuid4()),
+                vector=get_embedding(text=note_text),
+                payload={"text": note_text},
+            )
+        ],
+    )
+
+    st.session_state["note_audio_bytes_md5"] = None
+    st.session_state["note_audio_bytes"] = None
+    st.session_state["note_audio_text"] = ""
+    st.session_state["note_text"] = ""
+    st.session_state["audio_key"] += 1
+    st.session_state["text_key"] += 1
+    st.rerun()
+
+
+#
 # MAIN
 #
 
@@ -61,6 +135,8 @@ st.set_page_config(
 st.title(":memo: Notes AI")
 st.markdown("*Capture your thoughts with voice or text*")
 st.divider()
+
+ensure_qdrant_collection_exists()
 
 # OpenAI API key protection
 if not st.session_state.get("openai_api_key"):
@@ -87,8 +163,9 @@ input_mode = st.radio(
 
 if input_mode == ":microphone: Audio Recording":
     note_audio = audiorecorder(
-        start_prompt="Start recording",
-        stop_prompt="Stop Recording",
+        start_prompt="▶️ Start recording",
+        stop_prompt="⏹️ Stop Recording",
+        key=f"audio_recorder_{st.session_state.get('audio_key', 0)}",
     )
 
     if note_audio:
@@ -110,21 +187,41 @@ if input_mode == ":microphone: Audio Recording":
             format="audio/mp3",
         )
 
-        if st.button("Transcribe audio"):
+        if st.button(
+            "Transcribe audio",
+            use_container_width=True,
+        ):
             st.session_state["note_audio_text"] = transcribe_audio(
                 st.session_state["note_audio_bytes"],
             )
 
-        if st.session_state["note_audio_bytes"]:
-            st.text_area(
-                "Transcribed audio",
+        if st.session_state["note_audio_text"]:
+            st.session_state["note_audio_text"] = st.text_area(
+                "Audio transcription (you can edit):",
                 value=st.session_state["note_audio_text"],
-                # disabled=True,
             )
+
+        if st.session_state["note_audio_text"] and st.button(
+            "Save note",
+            disabled=not st.session_state["note_audio_text"].strip(),
+            use_container_width=True,
+        ):
+            upsert_note_to_qdrant(note_text=st.session_state["note_audio_text"])
+            st.toast("Note saved!", icon="🎉")
 
 else:
     st.session_state["note_text"] = st.text_area(
         "Type your note:",
+        value=st.session_state["note_text"],
         height=200,
         placeholder="Start typing your note here...",
     )
+
+    if st.session_state["note_text"] and st.button(
+        "Save note",
+        disabled=not st.session_state["note_text"].strip(),
+        use_container_width=True,
+        key=f"text_note_{st.session_state.get('text_key', 0)}",
+    ):
+        upsert_note_to_qdrant(note_text=st.session_state["note_text"])
+        st.toast("Note saved!", icon="🎉")
