@@ -45,7 +45,11 @@ def get_openai_client():
 
 @st.cache_resource()
 def get_qdrant_client():
-    return QdrantClient(path=":memory:")
+    # return QdrantClient(path=":memory:")
+    return QdrantClient(
+        url=env["QDRANT_URL"],
+        api_key=env["QDRANT_API_KEY"],
+    )
 
 
 #
@@ -235,16 +239,16 @@ with col1:
             value=st.session_state["note_text"],
             height=200,
             placeholder="Start typing your note here...",
+            key=f"text_note_{st.session_state.get('text_key', 0)}",
         )
 
         if st.session_state["note_text"] and st.button(
             "Save note",
             disabled=not st.session_state["note_text"].strip(),
             use_container_width=True,
-            key=f"text_note_{st.session_state.get('text_key', 0)}",
         ):
-            upsert_note_to_qdrant(note_text=st.session_state["note_text"])
             st.toast("Note saved!", icon="🎉")
+            upsert_note_to_qdrant(note_text=st.session_state["note_text"])
 
 with col2:
     query = st.text_input("Search Notes")

@@ -12,5 +12,4 @@ dependencies:
     - ffmpeg
     - pip
     - pip:
-          - langfuse
           - streamlit-audiorecorder
