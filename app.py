@@ -45,11 +45,11 @@ def get_openai_client():
 
 @st.cache_resource()
 def get_qdrant_client():
-    # return QdrantClient(path=":memory:")
-    return QdrantClient(
-        url=env["QDRANT_URL"],
-        api_key=env["QDRANT_API_KEY"],
-    )
+    return QdrantClient(path=":memory:")
+    # return QdrantClient(
+    #     url=env["QDRANT_URL"],
+    #     api_key=env["QDRANT_API_KEY"],
+    # )
 
 
 #
@@ -78,7 +78,7 @@ def transcribe_audio(audio_bytes):
 
 EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072
-QDRANT_COLLECTION_NAME = "notes-ai"
+QDRANT_COLLECTION_NAME = env["QDRANT_COLLECTION_NAME"]
 
 
 def ensure_qdrant_collection_exists():
